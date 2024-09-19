@@ -1,54 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Aug 28 15:13:05 2024
+Created on Tue Sep 10 16:17:59 2024
 
 @author: msolanki
 """
 
 import pandas as pd
-import numpy as np
-import os
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
 import torch
+import numpy as np
+from torch.utils.data import Dataset, DataLoader, random_split, default_collate
+import os
 from kan import *
-from sklearn.preprocessing import StandardScaler
-import os
-import time
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.utils import shuffle
-import torch
-from torch import nn
-import torch.nn.functional as F
 import torch.optim as optim
-from sklearn.preprocessing import StandardScaler
-import tqdm as tqdm
-import copy
-import wandb  # Import wandb
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error
 
-# Initialize wandb
-wandb.init(project="KAN_tf_to_gene_exp", entity="your-username")  # Change "your-username" to your Wandb username
-wandb.config = {
-    "learning_rate": 0.0001,
-    "epochs": 5,
-    "batch_size": 10,
-    "model_width": [X_data.shape[1], 8, 1],
-}
+# # Check if CUDA is available
+# if torch.cuda.is_available():
+#     device = torch.device("cuda")
+# else:
+#     device = torch.device("cpu")
 
-#wandb.login(key=["cec77c120fd0c482c535deeeb54879448f826151"])
+#print(device)
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-
-print(device)
-
+# Load data
 data_set_dir = "/BS/SparseExplainability/nobackup/KANSysbio/data_sets/tf_to_gene_exp"
 os.chdir(data_set_dir)
 
@@ -61,106 +38,119 @@ gene_exp_csv = pd.read_csv(gene_exp_data_dir, sep=",").drop(["Unnamed: 0"], axis
 X_data = tf_csv.drop(["tissue_code"], axis=1)
 y_data = gene_exp_csv.drop(["Unnamed:"], axis=1).iloc[:, 0]
 
-X_cal, X_val, y_cal, y_val = train_test_split(X_data, y_data, test_size=0.20, random_state=42)
+# Dataset class
+class TFGeneDataset(Dataset):
+    def __init__(self, X , y):
+        self.X = torch.tensor(X.values , dtype=torch.float32)
+        self.y = torch.tensor(y.values , dtype = torch.float32)
+        
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        feature = self.X[idx]
+        target = self.y[idx]
+        return feature , target
 
-scaler = StandardScaler()
+# Create datasets and loaders
+dataset = TFGeneDataset(X_data, y_data)
+train_set, val_set , test_set = random_split(dataset , [0.8 , 0.1 , 0.1])
 
-X_cal = scaler.fit_transform(X_cal)
-X_val = scaler.transform(X_val)
+train_loader = DataLoader(train_set , shuffle=True , batch_size=10)
+val_loader = DataLoader(val_set, shuffle=False, batch_size=10)
+test_loader = DataLoader(test_set, shuffle=False, batch_size=10)
 
-KAN_width = [X_cal.shape[1], 8, 1]
-
-y_cal = y_cal.values
-y_val = y_val.values
-
-X_cal = torch.tensor(X_cal, dtype=torch.float32)
-X_val = torch.tensor(X_val, dtype=torch.float32)
-y_cal = torch.tensor(y_cal, dtype=torch.float32)
-y_val = torch.tensor(y_val, dtype=torch.float32)
-
+# Initialize model
+KAN_width = [X_data.shape[1], 8, 1]
 model = KAN(width=KAN_width, grid=3, k=3, seed=1)
+#model.to(device)  # Ensure model is on the correct device
 
-# loss function and optimizer
+# Loss function and optimizer
+n_epochs = 5
 loss_fn = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
-n_epochs = 5
-batch_size = 10
-batch_start = torch.arange(0, len(X_cal), batch_size)
+# Store losses for plotting
+train_losses = []
+val_losses = []
 
-# Hold the best model
-best_mse = np.inf
-best_weights = None
-history = []
-train_history = []
+# Directory to save model and weights
+save_dir = "/BS/SparseExplainability/nobackup/KANSysbio/codes/models"  # Modify this path as per your environment
+if not os.path.exists(save_dir):
+    os.makedirs(save_dir)
 
-# Training Loop
+# Training loop
 for epoch in range(n_epochs):
-    
     model.train()
-    train_mse_accum = []
-    
-    with tqdm.tqdm(batch_start, unit="batch", mininterval=0, disable=True) as bar:
+    running_loss = 0.0
+    for X_batch, y_batch in train_loader:
+        # Move inputs and targets to the device
+        X_batch, y_batch = X_batch, y_batch
         
-        bar.set_description(f"Epoch {epoch}")
+        y_pred = model(X_batch)
+        loss = loss_fn(y_pred.squeeze(), y_batch)
         
-        for start in bar:
-            # Take a batch
-            X_batch = X_cal[start: start + batch_size]
-            y_batch = y_cal[start: start + batch_size]
-            
-            # Forward Pass
-            y_pred = model(X_batch)
-            loss = loss_fn(y_pred, y_batch)
-            
-            # Backward Pass
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # Update Weights
-            optimizer.step()
-            
-            train_mse_accum.append(float(loss))
-            bar.set_postfix(mse=float(loss))
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        running_loss += loss.item()
     
+    train_loss = running_loss / len(train_loader)
+    train_losses.append(train_loss)
+
+    # Validation
     model.eval()
-    y_pred = model(X_val)
-    mse = loss_fn(y_pred, y_val)
-    mse = float(mse)
+    val_loss = 0.0
+    with torch.no_grad():
+        for X_val, y_val in val_loader:
+            # Move inputs and targets to the device
+            X_val, y_val = X_val, y_val
+            
+            y_pred_val = model(X_val)
+            loss_val = loss_fn(y_pred_val.squeeze(), y_val)
+            val_loss += loss_val.item()
     
-    history.append(mse)
-    train_epoch_mse = np.mean(train_mse_accum)
-    train_history.append(train_epoch_mse)
+    val_loss /= len(val_loader)
+    val_losses.append(val_loss)
     
-    # Log training and validation metrics to Wandb
-    wandb.log({
-        "epoch": epoch,
-        "train_mse": train_epoch_mse,
-        "val_mse": mse,
-    })
-    
-    if mse < best_mse:
-        best_mse = mse
-        best_weights = copy.deepcopy(model.state_dict())
+    # Print losses for each epoch
+    print(f"Epoch {epoch+1}/{n_epochs}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
 
-model.load_state_dict(best_weights)
+# Save the entire model
+model_file = os.path.join(save_dir, "KAN_model.pth")
+torch.save(model, model_file)
+print(f"Model saved at: {model_file}")
 
-# Save the best model to Wandb
-torch.save(model.state_dict(), "best_model.pth")
-wandb.save("best_model.pth")
+# Save only the model's state_dict (weights and biases)
+weights_file = os.path.join(save_dir, "KAN_model_weights.pth")
+torch.save(model.state_dict(), weights_file)
+print(f"Weights and biases saved at: {weights_file}")
 
-print("MSE: %.2f" % best_mse)
-print("RMSE: %.2f" % np.sqrt(best_mse))
-
-# Plot and log to Wandb
-plt.plot(train_history, label='Training MSE')
-plt.plot(history, label='Validation MSE')
-plt.title("Training and Validation MSE per Epoch")
+# Plot losses
+plt.figure(figsize=(10,5))
+plt.plot(train_losses, label="Training Loss")
+plt.plot(val_losses, label="Validation Loss")
+plt.title("Training and Validation Loss Per Epoch")
 plt.xlabel("Epoch")
-plt.ylabel("Mean Squared Error")
+plt.ylabel("Loss")
 plt.legend()
 plt.show()
 
-# Log the final plot to Wandb
-wandb.log({"Training and Validation MSE Plot": wandb.Image(plt)})
-wandb.finish()
+# Test the model and compute RMSE
+model.eval()
+y_true = []
+y_pred = []
+
+with torch.no_grad():
+    for X_test, y_test in test_loader:
+        # Move inputs and targets to the device
+        X_test, y_test = X_test, y_test
+        
+        output = model(X_test)
+        y_true.extend(y_test.cpu().numpy())
+        y_pred.extend(output.squeeze().cpu().numpy())
+
+# Compute RMSE on test set
+rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+print(f"Test RMSE: {rmse:.4f}")

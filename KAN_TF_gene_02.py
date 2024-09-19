@@ -29,6 +29,7 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 import tqdm as tqdm
 import copy
+import time
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -99,6 +100,14 @@ history = []
 
 train_history = []
 
+save_dir = "/BS/SparseExplainability/nobackup/KANSysbio/codes/models"
+
+os.makedirs(save_dir, exist_ok = True)
+
+current_time = time.strftime("%Y-%m-%d_%H-%M-%S")
+
+model_save_path = os.path.join(save_dir, f"best_model_{current_time}.pth")
+
 ##Training Loop##
 
 for epoch in range(n_epochs):
@@ -156,11 +165,13 @@ for epoch in range(n_epochs):
         best_mse = mse
         
         best_weights = copy.deepcopy(model.state_dict())
+        
+        torch.save(best_weights , model_save_path)
             
 model.load_state_dict(best_weights)
 
-print("MSE: %.2f" % best_mse)
-print("RMSE: %.2f" % np.sqrt(best_mse))
+#print("MSE: %.2f" % best_mse)
+#print("RMSE: %.2f" % np.sqrt(best_mse))
 
 plt.plot(train_history, label='Training MSE')
 plt.plot(history, label='Validation MSE')
@@ -169,3 +180,8 @@ plt.xlabel("Epoch")
 plt.ylabel("Mean Squared Error")
 plt.legend()
 plt.show()
+
+#orch.save(best_weights , model_save_path)
+
+print("MSE: %.2f" % best_mse)
+print("RMSE: %.2f" % np.sqrt(best_mse))

@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Aug 28 13:42:40 2024
+Created on Wed Aug 28 15:13:05 2024
 
 @author: msolanki
 """
 
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import torch
+from kan import *
+from sklearn.preprocessing import StandardScaler
 import os
 import time
 import numpy as np
@@ -21,7 +29,14 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 import tqdm as tqdm
 import copy
+import time
 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
+print(device)
 
 data_set_dir = "/BS/SparseExplainability/nobackup/KANSysbio/data_sets/tf_to_gene_exp"
 os.chdir(data_set_dir)
@@ -33,20 +48,17 @@ tf_csv = pd.read_csv(tf_data_dir, sep=",").drop(["Unnamed: 0"], axis=1)
 gene_exp_csv = pd.read_csv(gene_exp_data_dir, sep=",").drop(["Unnamed: 0"], axis=1)
 
 X_data = tf_csv.drop(["tissue_code"], axis=1)
-
 y_data = gene_exp_csv.drop(["Unnamed:"], axis=1).iloc[:,0]
 
-X_test = X_data.sample(n = 200, random_state = 42)
+X_cal, X_val, y_cal, y_val = train_test_split(X_data, y_data, test_size=0.20, random_state=42)
 
-test_rows_indices = X_test.index
+scaler = StandardScaler()
 
-X_data_remaining = X_data.drop(test_rows_indices)
+X_cal = scaler.fit_transform(X_cal)
 
-y_test = y_data.iloc[test_rows_indices]
+X_val = scaler.transform(X_val)
 
-y_data_remaing = y_data.drop(test_rows_indices)
-
-X_cal, X_val, y_cal, y_val = train_test_split(X_data_remaining, y_data_remaing, test_size=0.20, random_state=42)
+KAN_width = [X_cal.shape[1] , 8, 1]
 
 scaler = StandardScaler()
 
@@ -66,26 +78,13 @@ y_cal = torch.tensor(y_cal , dtype = torch.float32)
 
 y_val = torch.tensor(y_val , dtype = torch.float32)
 
-X_test = torch.tensor(X_test.values , dtype = torch.float32)
+model = KAN(width=KAN_width, grid=3, k=3, seed=1)
 
-y_test = torch.tensor(y_test.values , dtype = torch.float32)
-
-# Define the model
-model = nn.Sequential(
-    nn.Linear(X_cal.shape[1], 24),
-    nn.ReLU(),
-    nn.Linear(24, 12),
-    nn.ReLU(),
-    nn.Linear(12, 6),
-    nn.ReLU(),
-    nn.Linear(6, 1)
-)
-    
 # loss function and optimizer
 loss_fn = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
-n_epochs = 100
+n_epochs = 5
 
 batch_size = 10
 
@@ -100,6 +99,8 @@ best_weights = None
 history = []
 
 train_history = []
+
+
 
 ##Training Loop##
 
@@ -158,11 +159,13 @@ for epoch in range(n_epochs):
         best_mse = mse
         
         best_weights = copy.deepcopy(model.state_dict())
+        
+        torch.save(best_weights , model_save_path)
             
 model.load_state_dict(best_weights)
 
-print("MSE: %.2f" % best_mse)
-print("RMSE: %.2f" % np.sqrt(best_mse))
+#print("MSE: %.2f" % best_mse)
+#print("RMSE: %.2f" % np.sqrt(best_mse))
 
 plt.plot(train_history, label='Training MSE')
 plt.plot(history, label='Validation MSE')
@@ -171,6 +174,16 @@ plt.xlabel("Epoch")
 plt.ylabel("Mean Squared Error")
 plt.legend()
 plt.show()
-        
-            
-            
+
+#orch.save(best_weights , model_save_path)
+
+
+save_dir = "/BS/SparseExplainability/nobackup/KANSysbio/codes/models"
+
+os.makedirs(save_dir, exist_ok = True)
+
+current_time = time.strftime("%Y-%m-%d_%H-%M-%S")
+
+model_save_path = os.path.join(save_dir, f"best_model_{current_time}.pth")
+
+
